@@ -1,0 +1,237 @@
+---
+title: "PRAMS case study"
+purpose: "For TIDAL training program Module 1.4.6, Machine learning implementation with R - a guided hands-on session"
+author: "Ran Xiao, Suhas Das"
+date: "2026-06"
+output: pdf_document
+---
+
+In the PURPLE case study, we looked at how different types of regression and ML can be applied to datasets to predict trends in underdiagnosis of IPV. Using the prams dataset, we can do something similar, taking the 1:3 samples that you have made already and applying the same regressions
+
+Section 0: Setup Chunk (same as the others)
+
+```{r setup, message=FALSE}
+### 1. Packages
+pacman::p_load(
+  haven,
+  dplyr,
+  caret,
+  ggplot2,
+  glmnet,
+  pROC,
+  PRROC
+)
+```
+
+#2. Load data prams \<- read_sas("phase8_arf_2016_2021.sas7bdat")
+
+#3. Construct IPV variable ipvv \<- c("PAB6HUS", "PAB_XHUS", "PAD6HUS", "PAD_XHUS")
+
+prams_IPV \<- prams %\>% filter(complete.cases(across(all_of(ipvv)))) %\>%\
+filter(!if_any(all_of(ipvv), \~ . %in% c("B","T"))) %\>%\
+mutate(IPV = if_else( PAB6HUS == 2 \| PAB_XHUS == 2 \| PAD6HUS == 2 \| PAD_XHUS == 2, 2, 1 ))
+
+#4. Create 1:3 sample (1000 yes / 3000 no) set.seed(123) #change this if you want to have a different random sample prams13_sample \<- bind_rows( prams_IPV %\>% filter(IPV == 2) %\>% slice_sample(n = 1000), prams_IPV %\>% filter(IPV == 1) %\>% slice_sample(n = 3000) )
+
+#5. Select final variables for modeling vars_needed \<- c( "YY4_DOB","HISPANIC","MAT_RACE_PU","MAT_AGE_PU","MARRIED","INSNONE","PP_NONE", "MAT_DEG","MAT_WIC","STRS_ARG","STRS_BIL","BPG_DEPRS8","MH_PGDX8","PGINTENT", "CIG_1TRI","CIG_2TRI","CIG_3TRI","CIG_PRIOR","OTH_TERM","MM_NOMD","TYP_INJR", "PRE_ABUS","PRE_MHDP","KOTELCHUCK","ASK_ABUS","ASK_DPRS","STATE","NEST_YR", "VITAMIN","IPV" )
+
+vars \<- vars_needed[vars_needed %in% names(prams13_sample)]
+
+prams13f \<- prams13_sample[, vars]
+
+Section 1: Data Preparation. In the PURPLE case study, there needed to be lots of preparation done because the datasets needed to be filtered to those that could experience IPV and would be eligible for the study, but in our setup (and PRAMS itself) has already done that for us. Let's see the distribution of our outcome variable in order to see if preparation was done correctly, and assign prams13f to "data"
+
+```{r}
+#load saved filtered data
+loaded_objects <- load("prams1to3_filteredvars.RData")
+data <- get(loaded_objects[1])
+
+table(data$IPV) #you should see 3000 no (1) and 1000 yes (2)
+```
+
+Section 2: Building our matrix. The datasets in purple use ICD codes and turns them into binary variables with a sparse matrix. PRAMS doesn't qork quite like that, and many of our variables are already binary. In order to run the regressions we want to, we are going to build a model matrix.
+
+```{r}
+#First we have to convert all predictors to a numeric data type
+predictors <- data %>% select(-IPV)
+# for simplicity, we convert all variables into numerics
+predictors_num <- data.frame(lapply(predictors, function(v) as.numeric(as.factor(v))))
+
+# state_dummies <- model.matrix(~ STATE - 1, data = data)
+# predictors_num <- predictors_num %>% select(-STATE) %>% cbind(state_dummies) 
+
+#Since our outcome is currently 1s and 2s, we need to convert them to 0 and 1
+y <- ifelse(data$IPV == 2, 1, 0)
+
+#using median imputations for the NAs
+for (nm in names(predictors_num)) {
+  predictors_num[[nm]][is.na(predictors_num[[nm]])] <-
+    median(predictors_num[[nm]], na.rm = TRUE)
+}
+
+#Define the X in the model matrix
+x <- as.matrix(predictors_num)
+
+#sanity check 
+table(y) #you should see 3000 no (0) and 1000 yes (1)
+
+
+```
+
+Section 3: Training and testing split. The PURPLE case study had a sampling section, but since we already did that in setup, we can move on to splitting our data for training and testing. The training data is what we will put into the regression models, and the test data is what we will use to evaluate each of the models. A good rule of thumb is 70% training and 30% testing. One key thing is to make sure we are splitting our data using a data partition, our training and testing data cannot have any overlap, it would be like giving out exam questions on a homework, not as good of an evaluation of learning.
+
+```{r}
+set.seed(345) #change this if you want different results
+train_idx <- createDataPartition(y, p = 0.8, list = FALSE)
+x_train <- x[train_idx, ]
+x_test  <- x[-train_idx, ]
+y_train <- y[train_idx]
+y_test  <- y[-train_idx]
+```
+
+Section 4: Standard logistic regression with no penalty. Just like how we did in module 1.3, regular logistic regression assesses the association of all variables with IPV, without regularization or penalization. Since PRAMS likely has many variables that interact with one another, this model will likely be overfit, but we can use standard regression as a baseline during evaluation
+
+```{r}
+model_log <- glmnet(
+  x = x_train,
+  y = y_train,
+  family = "binomial",
+  alpha = 0,
+  lambda = 0
+)
+
+#Evaluation
+prob_log <- predict(model_log, newx = x_test, type = "response")[,1]
+roc_log <- pROC::roc(y_test, prob_log)
+auc(roc_log) #AUC of 0.8292
+```
+
+Section 5: LASSO regression. LASSO adds an L1 penalty that shrinks many nonsignificant coefficients to zero. This performs automatic feature selection, helping identify which PRAMS variables are most predictive of IPV. It reduces overfitting compared to the standard logistic regression.
+
+```{r}
+cv_lasso <- cv.glmnet(
+  x = x_train,
+  y = y_train,
+  family = "binomial",
+  alpha = 1
+)
+
+model_lasso <- glmnet(
+  x = x_train,
+  y = y_train,
+  family = "binomial",
+  alpha = 1,
+  lambda = cv_lasso$lambda.min
+)
+
+prob_lasso <- predict(model_lasso, newx = x_test, type = "response")[,1]
+roc_lasso <- pROC::roc(y_test, prob_lasso)
+auc(roc_lasso) #0.8294
+```
+
+Section 6: Ridge Regression: Ridge regression works like LASSO but shrinks coefficients toward zero but never removes them.It is ideal when many predictors contribute small effects, and it handles multicollinearity better than logistic regression or LASSO.
+
+```{r}
+cv_ridge <- cv.glmnet(
+  x = x_train,
+  y = y_train,
+  family = "binomial",
+  alpha = 0
+)
+
+model_ridge <- glmnet(
+  x = x_train,
+  y = y_train,
+  family = "binomial",
+  alpha = 0,
+  lambda = cv_ridge$lambda.min
+)
+
+#evaluation
+prob_ridge <- predict(model_ridge, newx = x_test, type = "response")[,1]
+roc_ridge <- pROC::roc(y_test, prob_ridge)
+auc(roc_ridge) #AUC 0.8293
+```
+
+Section 6: Evaluation. Now to evaluate the strength of each of the models, we will create ROC Curves to compare sensitivity and specificity as well as find the area under the curves (AUC) to determine model strength. Refer to module 1.3
+
+```{r}
+roc_df <- bind_rows(
+  tibble(model="Logistic", fpr=1-roc_log$specificities, tpr=roc_log$sensitivities),
+  tibble(model="Lasso",    fpr=1-roc_lasso$specificities, tpr=roc_lasso$sensitivities),
+  tibble(model="Ridge",    fpr=1-roc_ridge$specificities, tpr=roc_ridge$sensitivities)
+)
+
+ggplot(roc_df, aes(fpr, tpr, color=model)) +
+  geom_line(size=1) +
+  geom_abline(linetype="dashed") +
+  theme_minimal() +
+  labs(title="ROC: Logistic vs LASSO vs Ridge",
+       x="1 - Specificity", y="Sensitivity")
+```
+
+As we can see, for this case study, the ROC curves are very similar. This is because we only have 8000 data points. As we add more data points (you can go back into the setup chunk and change the number if you have the computing power), then different models will show they are better than others.
+
+Section 7: PR Curves. Just like we talked about in Module 1.3, we can use PR curves as another evaluation metric. It compares true positive identified vs. positive cases identified, meaning it is better for datasets that have a rare positive outcome. This has a lot of lines that can get confusing, so I tried to make them visiaully appealing, you don't have to add all these colors and labels
+
+```{r}
+# Logistic PR curve
+pr_log <- pr.curve(
+  scores.class0 = prob_log[y_test == 1],
+  scores.class1 = prob_log[y_test == 0],
+  curve = TRUE
+)
+
+# LASSO PR curve
+pr_lasso <- pr.curve(
+  scores.class0 = prob_lasso[y_test == 1],
+  scores.class1 = prob_lasso[y_test == 0],
+  curve = TRUE
+)
+
+# Ridge PR curve
+pr_ridge <- pr.curve(
+  scores.class0 = prob_ridge[y_test == 1],
+  scores.class1 = prob_ridge[y_test == 0],
+  curve = TRUE
+)
+
+# Plot all three PR curves together
+plot(pr_log, col = "blue",  main = "Precision–Recall Curves: Logistic vs LASSO vs Ridge")
+lines(pr_lasso$curve[,1], pr_lasso$curve[,2], col = "red")
+lines(pr_ridge$curve[,1], pr_ridge$curve[,2], col = "darkgreen")
+
+legend(
+  "topright",
+  legend = c("Logistic", "LASSO", "Ridge"),
+  col    = c("blue", "red", "darkgreen"),
+  lwd    = 2
+)
+
+# Print PR-AUC values
+cat("Logistic PR-AUC:", round(pr_log$auc.integral, 4), "\n")
+cat("LASSO    PR-AUC:", round(pr_lasso$auc.integral, 4), "\n")
+cat("Ridge    PR-AUC:", round(pr_ridge$auc.integral, 4), "\n")
+```
+
+Again, we can see that they are similar.
+
+Section 8: Isolating the significant predictors. We can get the top 10 variables by using the slice_max() function in dyplr of the coefficients and plotting them with ggplot2
+
+```{r}
+coef_lasso <- as.matrix(coef(model_lasso))
+coef_df <- tibble(
+  feature = rownames(coef_lasso)[-1],
+  coefficient = coef_lasso[-1,1]
+)
+
+top10 <- coef_df %>% slice_max(abs(coefficient), n = 10)
+
+ggplot(top10, aes(x=reorder(feature, coefficient), y=coefficient)) +
+  geom_col() +
+  coord_flip() +
+  theme_minimal() +
+  labs(title="Top 10 LASSO Predictors of IPV")
+```
+
+As we can see, being married, mental health history, and depression being the top causes.

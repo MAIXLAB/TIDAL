@@ -1,0 +1,123 @@
+---
+title: 'TIDAL - TRAUMA INFORMED DATA SCIENCE FOR IPV PREVENTION'
+author: "ABEED SARKER; MODULE - 1.5.7"
+output:
+  pdf_document:
+    toc: no
+  html_document:
+    depth: 3
+    highlight: tango
+    theme: paper
+    toc: no
+---
+
+* First, let's open some libraries that we'll be using
+```{r message=FALSE, warning=TRUE}
+library(dplyr)
+library(caTools)
+library(tm)
+library(mlapi)
+library(e1071)
+library(caret)
+```
+
+* Next, we have to load the dataset
+```{r}
+full_training_set <- read.csv('train.csv')
+glimpse(full_training_set)
+```
+
+
+* Now let's load the text and preprocess it based on our knowledge from the last few classes
+```{r}
+all_training_texts <-full_training_set$text
+all_training_texts_corpus <- VCorpus(VectorSource(all_training_texts))
+all_training_texts_corpus <- tm_map(all_training_texts_corpus, content_transformer(tolower))
+all_training_texts_corpus <- tm_map(all_training_texts_corpus, removePunctuation)
+all_training_texts_corpus <- tm_map(all_training_texts_corpus, removeWords,stopwords("english"))
+all_training_texts_corpus <- tm_map(all_training_texts_corpus, stemDocument)
+length(all_training_texts_corpus)
+
+```
+* Now that we've loaded and preprocessed the texts, let's start vectorizing! *But we will split the training and test sets first to avoid data leak*. 
+* First, let's generate n-grams by defining a function called NLP_tokenizer. Then we convert all the tweets into n-grams (1-3). If you study the code carefully, you'll see that for 2- and 3-grams, adjacent words are being concatenated using an *underscore* character.
+```{r}
+NLP_tokenizer <- function(x) {
+  unlist(lapply(ngrams(words(x), 1:3), paste, collapse = "_"), use.names = FALSE)
+}
+training_n_gram_corpus <- tm_map(all_training_texts_corpus,content_transformer(NLP_tokenizer))
+```
+
+* We can view the length of the corpus and the content to ensure that the n-grams were generated appropriately.
+```{r}
+length(training_n_gram_corpus)
+training_n_gram_corpus[[4]]$content
+```
+
+* Now we split the sets (before vectorizing them). We also split the classes in the same manner.
+```{r}
+set.seed(1234)
+split <- sample.split(full_training_set$label,SplitRatio = 0.8)
+training_ngram_subset <- subset(training_n_gram_corpus, split==TRUE)
+evaluation_ngram_subset <- subset(training_n_gram_corpus, split==FALSE)
+training_subset_classes <- subset(full_training_set$label, split==TRUE)
+evalutation_subset_classes <- subset(full_training_set$label, split==FALSE)
+
+#creating another set from the training set for hyperparameter optimization
+split <- sample.split(training_subset_classes,SplitRatio = 0.8)
+training_hp_subset <- subset(training_ngram_subset, split==TRUE)
+training_hp_classes <- subset(training_subset_classes, split==TRUE)
+validation_ngram_subset <- subset(training_ngram_subset, split==FALSE)
+validation_ngram_classes <- subset(training_subset_classes,split==FALSE)
+```
+
+* Now that we have separated the sets, we can start vectorizing. We are doing it step by step. First, we are generating a document-term matrix for the training set. Then we are removing sparse n-grams.
+```{r}
+training_dct_matrix <- DocumentTermMatrix(training_hp_subset)
+training_dct_matrix_sparse <- removeSparseTerms(training_dct_matrix,0.995)
+```
+
+* Now we are vectorizing the validation set..
+```{r}
+val_dct_matrix_sparse <- DocumentTermMatrix(validation_ngram_subset, list(dictionary=colnames(training_dct_matrix_sparse)))
+```
+* The next steps are straightforward. We convert to data frames and make sure the instances follow the R-specific formats.
+```{r}
+training_term_matrix_df <- as.data.frame(as.matrix(training_dct_matrix_sparse))
+val_term_matrix_df <- as.data.frame(as.matrix(val_dct_matrix_sparse))
+colnames(training_term_matrix_df) <- make.names(colnames(training_term_matrix_df))
+colnames(val_term_matrix_df) <- make.names(colnames(val_dct_matrix_sparse))
+training_term_matrix_df$label <- training_hp_classes
+training_term_matrix_df$label <-as.factor(training_term_matrix_df$label)
+```
+
+* Here, we are experimenting with different values of the cost parameter
+```{r}
+i = 1
+while  (i <= 64){ 
+  trained_model <- svm(label ~., data=training_term_matrix_df,cost=i)
+  predictions <- predict(trained_model,newdata=val_term_matrix_df)
+  #print(i)
+  print(confusionMatrix(as.factor(validation_ngram_classes),predictions))
+  i = i*2
+}
+```
+* Now, we will perform the final evaluation on the held-out test set (training on the entire training set data)
+```{r}
+training_dct_matrix <- DocumentTermMatrix(training_ngram_subset)
+training_dct_matrix_sparse <- removeSparseTerms(training_dct_matrix,0.995)
+
+eval_dct_matrix_sparse <- DocumentTermMatrix(evaluation_ngram_subset, list(dictionary=colnames(training_dct_matrix_sparse)))
+
+training_term_matrix_df <- as.data.frame(as.matrix(training_dct_matrix_sparse))
+eval_term_matrix_df <- as.data.frame(as.matrix(eval_dct_matrix_sparse))
+colnames(training_term_matrix_df) <- make.names(colnames(training_term_matrix_df))
+colnames(eval_term_matrix_df) <- make.names(colnames(eval_dct_matrix_sparse))
+training_term_matrix_df$label <- training_subset_classes
+training_term_matrix_df$label <-as.factor(training_term_matrix_df$label)
+
+trained_model <- svm(label ~., data=training_term_matrix_df,cost=2)
+predictions <- predict(trained_model, newdata=eval_term_matrix_df)
+print(confusionMatrix(as.factor(evalutation_subset_classes),predictions))
+```
+

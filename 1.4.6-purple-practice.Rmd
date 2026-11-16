@@ -1,0 +1,300 @@
+---
+title: "PURPLE case study"
+Source: "Shanmugam, D., Hou, K. & Pierson, E. Quantifying disparities in intimate partner violence: a machine learning method to correct for underreporting. npj Womens Health 2, 15 (2024). https://doi.org/10.1038/s44294-024-00011-5"
+purpose: "For TIDAL training program Module 1.4.6, Machine learning implementation with R - a guided hands-on session"
+author: "Ran Xiao"
+trainee: "Your Name"
+date: "2025-06"
+output: pdf_document
+---
+
+```{r setup, message=FALSE}
+# Load all required libraries in one call, install if missing
+pacman::p_load(
+  tidyverse,  # dplyr, ggplot2, tibble, etc.
+  Matrix,     # sparseMatrix
+  caret,      # createDataPartition, confusionMatrix
+  glmnet,     # glmnet, cv.glmnet
+  pROC,       # ROC, AUC
+  ggplot2     # for plot ROC curves
+)
+```
+
+## Data Preparation
+
+```{r data-read}
+# Read diagnoses containing ICD events per hospital stay
+diagnoses <- ##### type in your code ##########
+
+# Read admissions and keep relevant columns
+admissions <- ##### type in your code ##########
+
+# Read patient demographics (age, gender)
+patients <- ##### type in your code ##########
+```
+
+```{r filter-data}
+# Filter for adult female patients only
+adult_female <- ##### type in your code ##########
+
+# Filter for emergency room admissions
+er_admissions <- ##### type in your code ##########
+
+# Subset diagnoses to adult females in ER
+df <- ##### type in your code ##########
+```
+
+```{r define-codes}
+# List ICD codes that indicate IPV-related symptoms
+suspicious_icd <- c(
+  'E9672','E9673','E9671','E9670','E9679',
+  'V6111','99581','99585',
+  'T7411XA','T7411XD','T7411XS',
+  '99580','T7611','T7611XA','T7611XD','T7611XS',
+  'Y070','Y0701','Y0702','Y0703','Y0704','Y079'
+)
+```
+
+## Sparse Matrix Construction
+
+```{r sparse-matrix}
+# Map each unique hadm_id to a row index
+hadm_index <- tibble(hadm_id = unique(df$hadm_id)) %>%
+  mutate(hadm_idx = row_number())
+# Map each ICD code to a column index
+icd_index <- tibble(icd_code = unique(df$icd_code)) %>%
+  mutate(icd_idx  = row_number())
+
+# Join indices back to main data for sparse matrix creation
+df_idx <- df %>%
+  left_join(hadm_index, by = "hadm_id") %>%
+  left_join(icd_index,  by = "icd_code")
+
+# Build sparse matrix X_full: rows = admissions, cols = ICD codes
+X_full <- sparseMatrix(
+  i    = df_idx$hadm_idx,
+  j    = df_idx$icd_idx,
+  x    = 1,
+  dims = c(max(df_idx$hadm_idx), max(df_idx$icd_idx))
+)
+# Label columns with actual ICD codes for interpretability
+colnames(X_full) <- icd_index$icd_code
+
+# Display dimensions: should be (# stays) x (# codes)
+cat("X_full dims:", dim(X_full), "\n")
+# display some data
+as.matrix(X_full[1:10, 1:10])
+```
+
+## Label Creation
+
+```{r label-creation}
+# Initialize mask vector for codes
+mask <- ##### type in your code ##########
+# Identify indices of suspicious ICDs
+sus_idx <- ##### type in your code ##########
+# Assign weight=1 to those codes
+mask[sus_idx] <- 1
+
+# Compute symptom score per stay: dot product
+scores <- X_full %*% mask
+# Binary label: 1 if any suspicious symptom, else 0
+y <- factor(as.integer(scores > 0), levels = c(0,1))
+# Check distribution
+table(y)
+```
+
+## Feature Selection & Sampling
+
+```{r feature-sample}
+# Exclude code columns used for label creation
+feature_cols <- ##### type in your code ##########
+X <- X_full[, feature_cols]
+
+# Balance dataset: 1:3 ratio of cases to controls
+cases <- which(y == "1")
+controls <- which(y == "0")
+set.seed(310)
+sampled_ctrl <- ##### type in your code ##########
+sel <- c(cases, sampled_ctrl)
+X <- X[sel, ]; y <- y[sel]
+
+# Print matrix dimensions
+cat("X has", nrow(X), "rows and", ncol(X), "columns\n")
+# Print label vector length and class counts
+cat("y has length", length(y), "\n")
+print(table(y))
+```
+
+## Train/Test Split
+
+```{r split}
+# 80% train, 20% test split preserving class proportions
+set.seed(310)
+train_idx <- ##### type in your code ##########
+X_train <- X[train_idx, ]; y_train <- y[train_idx]
+X_test  <- X[-train_idx,]; y_test  <- y[-train_idx]
+dim(X_train)
+dim(X_test)
+```
+
+## 1. Logistic Regression (No Penalty)
+
+```{r logistic}
+# Fit logistic regression by setting lambda=0 in glmnet
+model_log <- ##### type in your code ##########
+
+# Predict probabilities on train and test
+prob_tr <- ##### type in your code ##########
+prob_te <- ##### type in your code ##########
+# Use mean training probability as cutoff
+cutoff <- mean(prob_tr)
+# Convert to factor labels for confusionMatrix
+pred_tr <- factor(ifelse(prob_tr >= cutoff, "1","0"), levels=c("0","1"))
+pred_te <- factor(ifelse(prob_te >= cutoff, "1","0"), levels=c("0","1"))
+# Compute confusion matrices and AUC
+cm_tr <- confusionMatrix(pred_tr, y_train, positive="1")
+cm_te <- confusionMatrix(pred_te, y_test,  positive="1")
+auc_tr <- roc(y_train, prob_tr)$auc
+auc_te <- roc(y_test,  prob_te)$auc
+# Display results
+print(cm_tr); cat("Train AUC:", round(auc_tr,4), "\n")
+print(cm_te); cat("Test AUC:",  round(auc_te,4), "\n")
+```
+
+## 2. Lasso Regression (L1 Penalty)
+
+```{r lasso}
+# 10-fold CV to select best lambda for lasso
+cv_lasso <- ##### type in your code ##########
+
+# Fit final model at optimal lambda
+model_lasso <- ##### type in your code ##########
+
+# Predict & evaluate (same steps as logistic)
+prob_tr_l <- predict(model_lasso, newx=X_train, type="response")[,1]
+prob_te_l <- predict(model_lasso, newx=X_test,  type="response")[,1]
+cutoff_l <- mean(prob_tr_l)
+pred_tr_l <- factor(ifelse(prob_tr_l>=cutoff_l,"1","0"),levels=c("0","1"))
+pred_te_l <- factor(ifelse(prob_te_l>=cutoff_l,"1","0"),levels=c("0","1"))
+cm_tr_l <- confusionMatrix(pred_tr_l, y_train, positive="1")
+cm_te_l <- confusionMatrix(pred_te_l, y_test,  positive="1")
+auc_tr_l <- roc(y_train, prob_tr_l)$auc
+auc_te_l <- roc(y_test,  prob_te_l)$auc
+print(cm_tr_l); cat("Lasso Train AUC:", round(auc_tr_l,4), "\n")
+print(cm_te_l); cat("Lasso Test AUC:",  round(auc_te_l,4), "\n")
+```
+
+## 3. Ridge Regression (L2 Penalty)
+
+```{r ridge}
+# 10-fold CV for ridge penalty
+cv_ridge <- ##### type in your code ##########
+
+# Final ridge model
+model_ridge <- ##### type in your code ##########
+
+# Predict & evaluate as above
+prob_tr_r <- predict(model_ridge, newx=X_train, type="response")[,1]
+prob_te_r <- predict(model_ridge, newx=X_test,  type="response")[,1]
+
+cutoff_r <- mean(prob_tr_r)
+pred_tr_r <- factor(ifelse(prob_tr_r>=cutoff_r,"1","0"),levels=c("0","1"))
+pred_te_r <- factor(ifelse(prob_te_r>=cutoff_r,"1","0"),levels=c("0","1"))
+
+cm_tr_r <- confusionMatrix(pred_tr_r, y_train, positive="1")
+cm_te_r <- confusionMatrix(pred_te_r, y_test,  positive="1")
+
+auc_tr_r <- roc(y_train, prob_tr_r)$auc
+auc_te_r <- roc(y_test,  prob_te_r)$auc
+
+print(cm_tr_r); cat("Ridge Train AUC:", round(auc_tr_r,4), "\n")
+print(cm_te_r); cat("Ridge Test AUC:",  round(auc_te_r,4), "\n")
+```
+
+## 3. ROC: Logistic vs Lasso vs Ridge
+
+```{r plot-roc-fixed, message=FALSE}
+library(pROC)
+
+#Ensure each is a pure numeric vector:
+prob_log   <- as.vector(prob_te)
+prob_lasso <- as.vector(prob_te_l)
+prob_ridge <- as.vector(prob_te_r)
+
+#Build ROC objects
+roc_log   <- ##### type in your code ##########
+roc_lasso <- ##### type in your code ##########
+roc_ridge <- ##### type in your code ##########
+
+# construct FPR and TPR for ROC curve
+roc_df <- bind_rows(
+  tibble(
+    model = "Logistic",
+    fpr   = 1 - roc_log$specificities,
+    tpr   = roc_log$sensitivities
+  ),
+  tibble(
+    model = "Lasso",
+    fpr   = 1 - roc_lasso$specificities,
+    tpr   = roc_lasso$sensitivities
+  ),
+  tibble(
+    model = "Ridge",
+    fpr   = 1 - roc_ridge$specificities,
+    tpr   = roc_ridge$sensitivities
+  )
+)
+
+# plot ROCs
+ggplot(roc_df, aes(x = fpr, y = tpr, color = model)) +
+  geom_line(size = 1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(
+    title = "ROC: Logistic vs Lasso vs Ridge",
+    x     = "1 - Specificity",
+    y     = "Sensitivity",
+    color = "Model"
+  ) +
+  scale_x_continuous(limits = c(0,1), breaks = seq(0,1,0.1)) +
+  scale_y_continuous(limits = c(0,1), breaks = seq(0,1,0.1)) +
+  coord_fixed() +
+  theme_minimal() +
+  annotate(
+    "text", x = 0.6, y = 0.2, hjust = 0,
+    label = paste0(
+      "Logistic AUC=", round(auc(roc_log),3), "\n",
+      "Lasso    AUC=", round(auc(roc_lasso),3), "\n",
+      "Ridge    AUC=", round(auc(roc_ridge),3)
+    )
+  )
+```
+
+## Explainability: Top 10 Ridge Features
+
+```{r explainability}
+# Load ICD descriptions
+icd_names <- read.csv("mimic-iv-1.0/d_icd_diagnoses.csv") %>%
+  select(icd_code, long_title) %>%
+  distinct(icd_code, .keep_all=TRUE)
+
+# Extract coefficients from ridge model
+coef_mat <- ##### type in your code ##########
+
+coef_df <- tibble(
+  feature     = rownames(coef_mat)[-1],
+  coefficient = as.numeric(coef_mat[-1,1])
+)
+
+# Join and pick top10
+top10 <- coef_df %>%
+  inner_join(icd_names, by=c("feature"="icd_code")) %>%
+  mutate(label=paste0(feature,": ",long_title)) %>%
+  slice_max(order_by=abs(coefficient), n=10)
+
+# Plot
+ggplot(top10, aes(x=reorder(label,coefficient), y=coefficient)) +
+  geom_col() + coord_flip() +
+  labs(title="Top 10 Ridge Features by Coefficient", x=NULL, y="Coef") +
+  theme_minimal()
+```

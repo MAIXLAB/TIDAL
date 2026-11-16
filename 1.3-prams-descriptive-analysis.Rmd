@@ -1,0 +1,161 @@
+---
+title: "1.3 descriptive analysis"
+output: html_document
+date: "2026-06-08"
+---
+
+Setup Section:
+Note, if you already went through the previous demos and have your prams samples in your environment, you do not need to do this,
+but I am putting a simplified setup chunk for those that do not. 
+```{r}
+### 1. Setup ----
+library(haven)
+library(dplyr)
+library(janitor)
+
+### 2. Load data ----
+prams <- read_sas("phase8_arf_2016_2021.sas7bdat")
+
+### 3. Construct IPV variable ----
+ipvv <- c("PAB6HUS", "PAB_XHUS", "PAD6HUS", "PAD_XHUS")
+
+prams_IPV <- prams %>%
+  filter(complete.cases(across(all_of(ipvv)))) %>%        # remove missing IPV rows
+  filter(!if_any(all_of(ipvv), ~ . %in% c("B","T"))) %>%  # remove blank/teen-mom codes
+  mutate(IPV = if_else(
+    PAB6HUS == 2 | PAB_XHUS == 2 | PAD6HUS == 2 | PAD_XHUS == 2,
+    2, 1
+  ))
+
+### 4. Create 1:1 sample (1000 yes / 1000 no) ----
+set.seed(456)
+prams11_sample <- bind_rows(
+  prams_IPV %>% filter(IPV == 2) %>% slice_sample(n = 1000),
+  prams_IPV %>% filter(IPV == 1) %>% slice_sample(n = 1000)
+)
+
+### 5. Create 1:3 sample (1000 yes / 3000 no) ----
+set.seed(123)
+prams13_sample <- bind_rows(
+  prams_IPV %>% filter(IPV == 2) %>% slice_sample(n = 1000),
+  prams_IPV %>% filter(IPV == 1) %>% slice_sample(n = 3000)
+)
+
+### 6. Select final variables for modeling ----
+vars_needed <- c(
+  "YY4_DOB","HISPANIC","MAT_RACE_PU","MAT_AGE_PU","MARRIED","INSNONE","PP_NONE",
+  "MAT_DEG","MAT_WIC","STRS_ARG","STRS_BIL","BPG_DEPRS8","MH_PGDX8","PGINTENT",
+  "CIG_1TRI","CIG_2TRI","CIG_3TRI","CIG_PRIOR","OTH_TERM","MM_NOMD","TYP_INJR",
+  "PRE_ABUS","PRE_MHDP","KOTELCHUCK","ASK_ABUS","ASK_DPRS","STATE","NEST_YR",
+  "VITAMIN","IPV"
+)
+
+vars <- vars_needed[vars_needed %in% names(prams11_sample)]
+
+prams11f <- prams11_sample[, vars]
+prams13f <- prams13_sample[, vars]
+
+```
+
+
+Section 2: Descriptive Analysis
+
+2.1 Descriptive analysis of categorical variables, unweighted: As per https://emorytidal.netlify.app/prams, you can get counts for each of the categories for categorical variables in order to perform an unweighted descriptive analysis. We will be using a for loop in order to perform this for all of our categorical variables (minus our outcome variables)
+```{r}
+# Categorical variables 
+categorical_vars <- c("HISPANIC", "MAT_RACE_PU", "MARRIED", "INSNONE", "PP_NONE", "MAT_DEG", "MAT_WIC", "BPG_DEPRS8", "MH_PGDX8", "PGINTENT", "MM_NOMD", "TYP_INJR", "PRE_ABUS", "PRE_MHDP", "KOTELCHUCK", "ASK_ABUS", "ASK_DPRS", "IPV")
+
+#for loop to create a table for each categorical variable
+for (var in categorical_vars) {
+  cat("\n", var, "\n")
+  print(table(prams_IPV[[var]], useNA = "ifany"))
+}
+```
+
+2.2 Descriptive analysis for continuous variables, unweighted: For the continuous variables, we can use the summary function to get mean, median, max, quartiles. For loops : 
+```{r}
+continuous_vars <- c("MAT_AGE_PU", "CIG_1TRI", "CIG_2TRI", "CIG_3TRI", "CIG_PRIOR", "OTH_TERM")
+
+for (var in continuous_vars) {
+  cat("\n", var, "\n")
+  print(summary(prams_IPV[[var]]))
+}
+```
+
+2.3 Factoring and variable creation 
+```{r}
+#KOTELCHUCK is a variable that looks at adequacy of postnatal care using the Kotelchuck scale. Per our codebook, 1 = inadequate, 2 = interamediate, 3 = adequate, and 4 = adequate plus. What if we can make a new variable that uses the text values instead of numbers? This is where factor can come in. 
+
+prams11f$KOTELCHUCK.f <- factor(
+  prams11f$KOTELCHUCK, 
+  levels = c(1,2,3,4),
+  labels = c("inadequate", "intermediate", "adequate", "adequate plus")
+)
+
+#now let's generate a table to see how many for each Kotelchuck category there are per state in 2021
+
+prams11f %>% 
+  filter(NEST_YR == 2021) %>%
+  with(., table(STATE, KOTELCHUCK.f,
+                useNA = "ifany"))
+
+#Just like we used case_when to create our outcome variable, we can use factoring and ifelse to create a binary variable 
+prams11f$VITAMIN_4plus <- 
+  ifelse(prams11f$VITAMIN > 2, 1, 0) #if >2 then 1, else 0
+
+prams11f$VITAMIN_4plus.f <- factor(
+  prams11f$VITAMIN_4plus,
+  levels = c(0,1),
+  labels = c("3x/week or less", "4x/week or more")
+)
+
+#stats for vitamin usage by state
+table(prams11f$STATE, prams11f$VITAMIN_4plus.f, useNA = "ifany")
+```
+
+2.4 Table 1: Oftentimes, epidemiology studies have something called a "Table 1", which is the distribution of all predictor variables stratified 
+by the (usually) binary outcome variable. This can help us visualize trends and associations before we start modeling. 
+
+We can make a table 1 two ways, first, using dyplr the conventional way just to get the data points (good if you just need data points to put into a separate figure), or using the tableone package in R itself to create a table 1. 
+```{r}
+# function to summarize one variable
+summ_var <- function(df, outcome, var) {
+  df %>%
+    mutate(
+      across(all_of(c(outcome, var)), as.character)
+    ) %>%
+    count(!!sym(outcome), !!sym(var), name = "n") %>%
+    group_by(!!sym(outcome)) %>%
+    mutate(pct = round(100 * n / sum(n), 1)) %>%
+    ungroup() %>%
+    mutate(variable = var) %>%
+    select(variable, IPV = !!sym(outcome), level = !!sym(var), n, pct)
+}
+
+# apply to all variables and bind into one table
+table1_simple <- bind_rows(
+  lapply(vars, function(v) summ_var(prams13f, "IPV", v))
+)
+
+table1_simple
+```
+
+Instead of a giant block of text, let's try using the package tableone in order to create a better looking table 1: 
+```{r}
+#needed packages
+#install.packages("tableone")
+library(tableone)
+
+factorVars <- vars[sapply(prams13f[vars], is.factor)]
+
+# Create Table 1
+table1 <- CreateTableOne(
+  vars = vars,
+  strata = "IPV",
+  data = prams13f,
+  factorVars = factorVars
+)
+
+# Print with p-values
+print(table1, showAllLevels = TRUE, quote = FALSE, noSpaces = TRUE, test = TRUE)
+```

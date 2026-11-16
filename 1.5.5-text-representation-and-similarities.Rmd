@@ -1,0 +1,144 @@
+---
+title: 'TIDAL - TRAUMA INFORMED DATA SCIENCE FOR IPV PREVENTION'
+author: "ABEED SARKER; MODULE - 1.5.5"
+output:
+  pdf_document:
+    toc: no
+  html_document:
+    depth: 3
+    highlight: tango
+    theme: paper
+    toc: no
+---
+* PART 1: ADVANCED VECTORIZATION
+
+* Load the libraries
+
+```{r warning=TRUE, message=FALSE}
+
+library(tm)
+library(dplyr)
+
+```
+* Like last in the last class, we load the train.csv file first.
+```{r}
+training_dataset <- read.csv('train.csv')
+glimpse(training_dataset)
+
+```
+
+* Task: Follow the steps from last class to preprocess the text by lowercasing, stop word removal and stemming. Then create a Document-Term matrix
+```{r warning=FALSE}
+tweet_texts <- training_dataset$text
+tweet_text_corpus <- Corpus(VectorSource(tweet_texts))
+tweet_text_corpus <- tm_map(tweet_text_corpus, content_transformer(tolower))
+tweet_text_corpus <- tm_map(tweet_text_corpus, function(x) removeWords(x, stopwords("en")))
+tweet_text_corpus <- tm_map(tweet_text_corpus, stemDocument)
+
+
+NLP_tokenizer <- function(x) {
+  unlist(lapply(ngrams(words(x), 1:2), paste, collapse = "_"), use.names = FALSE)
+}
+
+n_gram_corpus <- tm_map(tweet_text_corpus,content_transformer(NLP_tokenizer))
+
+
+doc_term_matrix <- DocumentTermMatrix(tweet_text_corpus)
+```
+
+* Which terms have a strong association with the term "violenc"?
+```{r eval=FALSE}
+findAssocs(doc_term_matrix,"violenc",0.05)
+```
+
+
+* What if we wanted a different type of document vector rather than binary? To create a document term matrix that contains term frequencies rather than just the presence, we can use the weghtTF function.
+```{r}
+doc_term_matrix_tf <- DocumentTermMatrix(tweet_text_corpus, control = list(weightTf(tweet_text_corpus)))
+
+
+doc_term_matrix_tfidf <- DocumentTermMatrix(tweet_text_corpus, 
+                                            control = list(weighting = function(x) 
+                                              weightTfIdf(x, normalize = FALSE), 
+                                              stopwords = TRUE))
+
+```
+
+
+* PART 2: SIMILARITY MEASUREMENTS
+
+* First, let's see how we can compute jaccard similarity. Remember that jaccard similarity does not require vectorization.
+
+```{r}
+a <- n_gram_corpus[[3]]$content
+b <- n_gram_corpus[[3]]$content
+
+intersection = length(intersect(a, b))
+union = length(union(a,b))
+jaccard_similarity <- intersection/union
+jaccard_similarity
+```
+
+* For cosine similarity, we need the vector representation. We could write the function ourselves or we can use one of the many libraries that have an implementation of the similarity measure. In this case, we are importing the lsa library.
+```{r}
+library(lsa)
+doc_term_matrix_tfidf[,1]
+dtm_matrix <- as.matrix(doc_term_matrix_tfidf)
+cosine (dtm_matrix[,1],dtm_matrix[,2])
+```
+
+* We have so far looked at jaccard similarity, which uses entire tokens (requires tokenization) and cosine similarity, which uses vector representations. However, what if we wanted to compare two short strings? In other words, how could we compute character-level similarities? We can use the Levenshtein distance/ratio method. Let's compute the similarity between the 1st and 100th documents.
+```{r}
+t1 <- tweet_text_corpus[[1]]$content
+t100 <- tweet_text_corpus[[100]]$content
+lr <- (nchar(t1) + nchar(t100) - adist(t1,t100))/(nchar(t1) + nchar(t100))
+t1
+t100
+lr
+```
+
+* Which tweet is most similar to tweet #1?
+```{r eval=FALSE}
+#Students must iterate through all the tweets (any manner of iteration is fine) and compare the first string with each. 
+#I learned coding in C++, so I always like to write C++ style code.
+
+max_sim <- 0
+most_similar_tweet_loc <- -1
+t1 <- tweet_text_corpus[[1]]$content
+for (i in 2:length(tweet_text_corpus)) {
+  t2 <- tweet_text_corpus[[i]]$content
+  sim <- (nchar(t1) + nchar(t2) - adist(t1,t2))/(nchar(t2) + nchar(t2))
+  if (sim > max_sim){
+    max_sim <- sim
+    most_similar_tweet_loc <- i
+  }
+}
+'Most similar is the tweet at location:'
+most_similar_tweet_loc
+'Highest similarity:'
+max_sim
+#tweet_text_corpus[[1]]$content
+#tweet_text_corpus[[most_similar_tweet_loc]]$content
+
+```
+
+* PART 3: SEARCHING TEXTS
+* The grep function is the most commonly used and is very useful! Let's search for how many tweets contain the term 'mental'. (Remember, if you have stemmed your document, the search also has to be stemmed). Change some of the search terms to see what you find...
+
+* Note that we are using the original set of tweets for this search because the tweets in the corpus have already been stemmed. Also note that we need to lowercase the tweets before the search. All these things are common in NLP, so you have to always think about how to use the functions you know.
+```{r}
+m1<- grep("abuse",tolower(tweet_texts))
+m2<- grep("verbal",tolower(tweet_texts))
+m1
+```
+
+* We can also use this (and related functions) to find documents that contain multiple items of interest.
+```{r}
+m1<- grep("abuse|violence",tolower(tweet_texts))
+m2<- grep("verbal|physical",tolower(tweet_texts))
+common_m <- intersect(m1,m2)
+common_m
+```
+
+
+* That's all! Next class, we will see how we can use n-gram vectors for text classification!

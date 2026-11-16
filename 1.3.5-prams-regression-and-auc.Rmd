@@ -1,0 +1,243 @@
+---
+title: "1.3 Regression"
+output: html_document
+date: "2026-06-08"
+---
+
+Setup Section:
+Note, if you already went through the previous demos and have your prams samples in your environment, you do not need to do this,
+but I am putting a simplified setup chunk for those that do not. 
+```{r}
+### 1. Setup ----
+library(haven)
+library(dplyr)
+library(haven)
+library(dplyr)
+library(survey)
+library(caret)
+library(ggplot2)
+library(tidyr)
+library(gtsummary)
+library(broom)
+library(broom.helpers)
+library(glmnet)
+
+### 2. Load data ----
+prams <- read_sas("phase8_arf_2016_2021.sas7bdat")
+
+### 3. Construct IPV variable ----
+ipvv <- c("PAB6HUS", "PAB_XHUS", "PAD6HUS", "PAD_XHUS")
+
+prams_IPV <- prams %>%
+  filter(complete.cases(across(all_of(ipvv)))) %>%        # remove missing IPV rows
+  filter(!if_any(all_of(ipvv), ~ . %in% c("B","T"))) %>%  # remove blank/teen-mom codes
+  mutate(IPV = if_else(
+    PAB6HUS == 2 | PAB_XHUS == 2 | PAD6HUS == 2 | PAD_XHUS == 2,
+    2, 1
+  ))
+
+### 4. Create 1:1 sample (1000 yes / 1000 no) ----
+set.seed(456)
+prams11_sample <- bind_rows(
+  prams_IPV %>% filter(IPV == 2) %>% slice_sample(n = 1000),
+  prams_IPV %>% filter(IPV == 1) %>% slice_sample(n = 1000)
+)
+
+### 5. Create 1:3 sample (1000 yes / 3000 no) ----
+set.seed(123)
+prams13_sample <- bind_rows(
+  prams_IPV %>% filter(IPV == 2) %>% slice_sample(n = 1000),
+  prams_IPV %>% filter(IPV == 1) %>% slice_sample(n = 3000)
+)
+
+### 6. Select final variables for modeling ----
+vars_needed <- c(
+  "YY4_DOB","HISPANIC","MAT_RACE_PU","MAT_AGE_PU","MARRIED","INSNONE","PP_NONE",
+  "MAT_DEG","MAT_WIC","STRS_ARG","STRS_BIL","BPG_DEPRS8","MH_PGDX8","PGINTENT",
+  "CIG_1TRI","CIG_2TRI","CIG_3TRI","CIG_PRIOR","OTH_TERM","MM_NOMD","TYP_INJR",
+  "PRE_ABUS","PRE_MHDP","KOTELCHUCK","ASK_ABUS","ASK_DPRS","STATE","NEST_YR",
+  "VITAMIN","IPV"
+)
+
+vars <- vars_needed[vars_needed %in% names(prams11_sample)]
+
+prams11f <- prams11_sample[, vars]
+prams13f <- prams13_sample[, vars]
+
+```
+
+
+Section 2: Standard Logistic Regression 
+
+Logistic Regression is a great analysis method in order to determine which predictors (variables) in your data have a statistically significant effect on your BINARY outcome (logistic only works if outcome is binary, if it is continuous, then use linear regression). It does so by graphically finding the relationship between a variable and its expected outcome versus the actual outcome, think of the "line of best fit" on a scatterplot, but a logistic curve instead of a lienar one. More information about it can be found in the modules as well as this external resource: https://medium.com/@muksamthebe10/6-types-of-regression-models-in-machine-learning-you-should-know-about-e8a74a3870cb. 
+
+The main output of logistic regressions is the natural log of the ODDS RATIO (OR=1 means no association). If we exponentiate the output of a logistic regression, which some R packages can do automatically, then we can get the ORs of each variable, as well as the 95% confidence interval (remember, if the confidence interval crosses 1, then the association is not significant). 
+
+Let's try it 
+
+2.1 Setup: First, the glm function from survey package only works if the binomial is coded as either 0=no, 1=yes, or an explicit yes/no. Since we currently have IPV as 1=no and 2=yes, then we need to refactor 
+```{r}
+prams13f$IPV <- factor(prams13f$IPV,
+                     levels = c(1,2),
+                     labels = c("No","Yes"))
+```
+
+
+2.1 Standard logistic regression of a few select variables. This is looking at the effect of adequate PNC care, hispanic origin, and state of origin (for each state) on IPV 
+```{r}
+glm1 <- glm(IPV ~ KOTELCHUCK + HISPANIC + STATE,
+            data = prams13f,
+            family = "binomial") #logistic always uses family=binomial
+```
+
+
+2.2 getting the results of our logistic regression: There are many ways to do this. If you just used summary() or table(), then you would get the natural log of the odds ratio. You could exponentiate the table you get for both the ORs and the confidence interval, or you could use the gtsummary function to do that for you. This will take a minute. 
+```{r}
+#Standard way of getting ORs 
+exp(coef(glm1))
+
+#Standard way of getting OR confidence intervals 
+exp(confint(glm1))
+
+#if I want to put both together in a table 
+OR_table1 <- cbind(
+  OR  = exp(coef(glm1)),
+  LCL = exp(confint(glm1)[,1]),
+  UCL = exp(confint(glm1)[,2])
+)
+
+OR_table1
+
+#Or, I could use gtsummary
+gtsummary::tbl_regression(glm1,
+                          exponentiate = TRUE)
+```
+
+Based off of the regression of these few interacting terms, we can see that the statistically significant predictors at the 95% confidence interval are the Kotelchuck index (protective), being from colorado (protective), being from kansas (harmful), being from massachusetts (protective), being from New Mexico (protective), being from Rhode Island (protective), and being from Utah (protective).
+
+
+2.3 Unweighted logistic regression with every variable: You can use a dot if you want to see the interaction with every variable besides your outcome 
+```{r}
+glm2 <- glm(IPV ~ .,
+            data = prams13f,
+            family="binomial")
+gtsummary::tbl_regression(glm2,
+                          exponentiate = TRUE)
+```
+I will let you go through the resulting table of all the variables and find which ones are significant. 
+
+
+Section 3: LASSO regression 
+
+Welcome to your first machine learning concept! LASSO is a good ML model to bridge standard regression and more complex ML and Deep Learning models. 
+
+Logistic Regression has a habit of overfitting on the training data, meaning that it is not as strong when new data is applied. It also has unstable coefficient changes with many variables and can be hard to interpret when many variables are significant. 
+
+LASSO regression adds penalties to variables that are not significant to minimize their interaction impact, and re-runs the regression again. Repeat this process iteratively many times, and you isolate the variables that have a true significant impact on your outcome. Let's try it 
+
+3.1, changing outcome to 0/1 in our full PRAMS dataset, and creating a new dataframe for our LASSO model
+```{r}
+lasso_data <- prams13f
+lasso_data$IPV_bin <- ifelse(lasso_data$IPV == "Yes", 1, 0)
+table(lasso_data$IPV_bin)
+```
+
+3.2 cleaning and building the model matrix
+```{r}
+# removing the ID and outcome variables, as these are not predictors
+# also removing IPV-defining variables to prevent data leakage
+leakage_vars <- c(
+  "IPV", "IPV_bin", "ID", "WTANAL",
+  "PAB6HUS", "PAD6HUS", "PAB_XHUS", "PAD_XHUS",
+  "PRE_ABUS", "ASK_ABUS", "PRE_ABUS_RAW", "ASK_ABUS_RAW"
+)
+
+predictor_data <- lasso_data[ , !(names(lasso_data) %in% leakage_vars)]
+
+# setting all variables as numeric
+predictor_numeric <- data.frame(
+  lapply(predictor_data, function(v) as.numeric(as.factor(v)))
+)
+
+y <- lasso_data$IPV_bin
+
+# remove columns with all NA
+predictor_numeric <- predictor_numeric[ , colSums(!is.na(predictor_numeric)) > 0]
+
+# remove columns with no variation, as these will collapse to one level and give you an error code that looks like:
+# Error in `contrasts<-`(`*tmp*`, value = contr.funs[1 + isOF[nn]]) : 
+# contrasts can be applied only to factors with 2 or more levels.
+# What this means is that once LASSO is applied, the variable will collapse to have one value.
+predictor_numeric <- predictor_numeric[ , sapply(
+  predictor_numeric,
+  function(v) length(unique(v[!is.na(v)])) > 1
+)]
+
+# I am using median imputation for all remaining missing 
+for (nm in names(predictor_numeric)) {
+  predictor_numeric[[nm]][is.na(predictor_numeric[[nm]])] <-
+    median(predictor_numeric[[nm]], na.rm = TRUE)
+}
+
+# remove near-zero-variance predictors
+nzv <- sapply(predictor_numeric, function(v) {
+  tab <- table(v)
+  max(tab) / sum(tab) > 0.95
+})
+
+predictor_numeric <- predictor_numeric[ , !nzv]
+
+# build model matrix
+x <- as.matrix(predictor_numeric)
+
+```
+
+
+3.3 LASSO 
+```{r}
+set.seed(123)
+
+cvfit <- cv.glmnet( x, y,
+                    family = "binomial",
+                    alpha = 1
+                    )
+
+exp(coef(cvfit, s = "lambda.min"))
+```
+
+Notice that in our dataset, no variables were removed. If you try to use the full prams dataset (I don't recommend it, it will crash your computer, trust me, I tried), then penalized variables that are not significant will show up as a "."
+
+
+Section 4: Evaluation 
+
+In order to test whether the model we make is accurate and precise, we can build a precision-recall curve (PRC). 
+PRCs compares how many positive cases did the model find, and how many of the found positive cases were actually positive.
+
+The Area Under the Curve (AUC) is a value between 0 and 1 and will tell us how good the model is. A value of 1 means it's
+a perfect predictor (you will never see this, if you do, that means that there is something called data leakage), and a value of 0.5 is a coin flip. 
+
+We are gong to evaluate our LASSO model using package PRROC 
+```{r}
+library(PRROC)
+
+# Predicted probabilities from LASSO
+lasso_prob <- predict(cvfit, newx = x, s = "lambda.min", type = "response")
+
+#Making our PRC
+pr <- pr.curve(
+  scores.class0 = lasso_prob[y == 1],   # predicted probs for IPV = 1
+  scores.class1 = lasso_prob[y == 0],   # predicted probs for IPV = 0
+  curve = TRUE
+)
+
+plot(pr)
+
+#Recall back to calc, an integral is just an area under the curve, so for AUC we can use .integral
+pr$auc.integral
+
+```
+
+Assuming you have the same starting seed that I did, you should get an AUC of 0.59. Better than a coin flip but not a very strong model. We will look at stronger models in future lessons. 
+
+
+

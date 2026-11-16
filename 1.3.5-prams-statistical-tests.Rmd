@@ -1,0 +1,135 @@
+---
+title: "1.3.5 Statistical Tests"
+output: html_document
+date: "2026-06-08"
+---
+
+
+Setup Section:
+Note, if you already went through the previous demos and have your prams samples in your environment, you do not need to do this,
+but I am putting a simplified setup chunk for those that do not. 
+```{r}
+### 1. Setup ----
+library(haven)
+library(dplyr)
+library(effsize)
+library(haven)
+library(rcompanion)
+
+### 2. Load data ----
+prams <- read_sas("phase8_arf_2016_2021.sas7bdat")
+
+### 3. Construct IPV variable ----
+ipvv <- c("PAB6HUS", "PAB_XHUS", "PAD6HUS", "PAD_XHUS")
+
+prams_IPV <- prams %>%
+  filter(complete.cases(across(all_of(ipvv)))) %>%        # remove missing IPV rows
+  filter(!if_any(all_of(ipvv), ~ . %in% c("B","T"))) %>%  # remove blank/teen-mom codes
+  mutate(IPV = if_else(
+    PAB6HUS == 2 | PAB_XHUS == 2 | PAD6HUS == 2 | PAD_XHUS == 2,
+    2, 1
+  ))
+
+### 4. Create 1:1 sample (1000 yes / 1000 no) ----
+set.seed(456)
+prams11_sample <- bind_rows(
+  prams_IPV %>% filter(IPV == 2) %>% slice_sample(n = 1000),
+  prams_IPV %>% filter(IPV == 1) %>% slice_sample(n = 1000)
+)
+
+### 5. Create 1:3 sample (1000 yes / 3000 no) ----
+set.seed(123)
+prams13_sample <- bind_rows(
+  prams_IPV %>% filter(IPV == 2) %>% slice_sample(n = 1000),
+  prams_IPV %>% filter(IPV == 1) %>% slice_sample(n = 3000)
+)
+
+### 6. Select final variables for modeling ----
+vars_needed <- c(
+  "YY4_DOB","HISPANIC","MAT_RACE_PU","MAT_AGE_PU","MARRIED","INSNONE","PP_NONE",
+  "MAT_DEG","MAT_WIC","STRS_ARG","STRS_BIL","BPG_DEPRS8","MH_PGDX8","PGINTENT",
+  "CIG_1TRI","CIG_2TRI","CIG_3TRI","CIG_PRIOR","OTH_TERM","MM_NOMD","TYP_INJR",
+  "PRE_ABUS","PRE_MHDP","KOTELCHUCK","ASK_ABUS","ASK_DPRS","STATE","NEST_YR",
+  "VITAMIN","IPV"
+)
+
+vars <- vars_needed[vars_needed %in% names(prams11_sample)]
+
+prams11f <- prams11_sample[, vars]
+prams13f <- prams13_sample[, vars]
+
+```
+
+
+Section 2: Chi squared tests: 
+The chi‑square test checks whether two categorical variables are associated with each other.
+It compares the observed counts in each category to the expected counts if there were no relationship.
+
+Use it when both variables are categorical, usually with one binary (e.g., IPV vs Marital Status).
+```{r}
+#IPV vs. Marital status 
+tbl_married <- table(prams13f$IPV, prams13f$MARRIED)
+tbl_married
+
+chisq.test(tbl_married)
+
+#IPV vs. WIC status
+tbl_wic <- table(prams13f$IPV, prams13f$MAT_WIC)
+tbl_wic
+
+chisq.test(tbl_wic)
+
+#IPV vs. Depression
+tbl_dep <- table(prams13f$IPV, prams13f$BPG_DEPRS8)
+tbl_dep
+
+chisq.test(tbl_dep)
+```
+
+
+Section 3: A t‑test compares the means of a continuous variable between two groups.
+It answers the question: Is the average value different between IPV = 1 and IPV = 2?
+
+Use it when the outcome is binary, the predictor is continuous, and data are roughly normally distributed (or sample size is large)
+```{r}
+#Maternal Age vs. IPV t-test
+t.test(MAT_AGE_PU ~ IPV, data = prams13f)
+
+#Smoking in the 1st trimester vs. IPV t-test 
+t.test(CIG_1TRI ~ IPV, data = prams13f)
+```
+
+
+Section 4: Wilcoxon Ranked Test 
+The Wilcoxon test compares the distributions of a continuous variable between two groups without assuming normality.
+It uses ranks instead of raw values, making it more robust to skewed data.
+
+Use it when the continuous variable is skewed or you want a non‑parametric alternative to the t‑test
+```{r}
+#Prior smoking history vs. IPV
+wilcox.test(CIG_PRIOR ~ IPV, data = prams13f)
+
+#OTH Term vs. IPV
+wilcox.test(OTH_TERM ~ IPV, data = prams13f)
+```
+
+
+Section 5: Correlation between predictors
+Same test as Section 1, but used to explore relationships between predictors, not between predictor and outcome.
+
+This helps identify collinearity, overlapping constructs, variables that may not belong in the same model
+```{r}
+#WIC vs. Marital Status 
+tbl_wic_married <- table(prams13f$MAT_WIC, prams13f$MARRIED)
+tbl_wic_married
+
+chisq.test(tbl_wic_married)
+
+#Depression vs. Mental Health Diagnosis 
+tbl_dep_mh <- table(prams13f$BPG_DEPRS8, prams13f$MH_PGDX8)
+tbl_dep_mh
+
+chisq.test(tbl_dep_mh)
+
+```
+

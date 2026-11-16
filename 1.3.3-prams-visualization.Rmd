@@ -1,0 +1,108 @@
+---
+title: "1.3.3 Data Visualization"
+output: html_document
+date: "2026-06-08"
+---
+
+Setup Section:
+Note, if you already went through the previous demos and have your prams samples in your environment, you do not need to do this,
+but I am putting a simplified setup chunk for those that do not. 
+```{r}
+### 1. Setup ----
+library(haven)
+library(dplyr)
+library(ggplot2)
+
+### 2. Load data ----
+prams <- read_sas("phase8_arf_2016_2021.sas7bdat")
+
+### 3. Construct IPV variable ----
+ipvv <- c("PAB6HUS", "PAB_XHUS", "PAD6HUS", "PAD_XHUS")
+
+prams_IPV <- prams %>%
+  filter(complete.cases(across(all_of(ipvv)))) %>%        # remove missing IPV rows
+  filter(!if_any(all_of(ipvv), ~ . %in% c("B","T"))) %>%  # remove blank/teen-mom codes
+  mutate(IPV = if_else(
+    PAB6HUS == 2 | PAB_XHUS == 2 | PAD6HUS == 2 | PAD_XHUS == 2,
+    2, 1
+  ))
+
+### 4. Create 1:1 sample (1000 yes / 1000 no) ----
+set.seed(456)
+prams11_sample <- bind_rows(
+  prams_IPV %>% filter(IPV == 2) %>% slice_sample(n = 1000),
+  prams_IPV %>% filter(IPV == 1) %>% slice_sample(n = 1000)
+)
+
+### 5. Create 1:3 sample (1000 yes / 3000 no) ----
+set.seed(123)
+prams13_sample <- bind_rows(
+  prams_IPV %>% filter(IPV == 2) %>% slice_sample(n = 1000),
+  prams_IPV %>% filter(IPV == 1) %>% slice_sample(n = 3000)
+)
+
+### 6. Select final variables for modeling ----
+vars_needed <- c(
+  "YY4_DOB","HISPANIC","MAT_RACE_PU","MAT_AGE_PU","MARRIED","INSNONE","PP_NONE",
+  "MAT_DEG","MAT_WIC","STRS_ARG","STRS_BIL","BPG_DEPRS8","MH_PGDX8","PGINTENT",
+  "CIG_1TRI","CIG_2TRI","CIG_3TRI","CIG_PRIOR","OTH_TERM","MM_NOMD","TYP_INJR",
+  "PRE_ABUS","PRE_MHDP","KOTELCHUCK","ASK_ABUS","ASK_DPRS","STATE","NEST_YR",
+  "VITAMIN","IPV"
+)
+
+vars <- vars_needed[vars_needed %in% names(prams11_sample)]
+
+prams11f <- prams11_sample[, vars]
+prams13f <- prams13_sample[, vars]
+
+```
+
+
+1.3.3: Visualizations
+
+1.3.3.1 First, let's look at maternal age from our large prams dataset via a histogram, it's just as simple as using the hist() function
+```{r}
+#histrogram
+hist(prams$MAT_AGE_PU)
+```
+
+
+1.3.3.2 Now, lets go back to our subsetted data and get summary statistics for the maternal depression before and maternal depression after pregnancy variables 
+```{r}
+summary(prams11f$BPG_DEPRS8) #before
+summary(prams11f$MH_PGDX8) #during
+```
+
+
+1.3.3.3 ggplot 2 is a package that can create many visually appealing and detailed graphs. Lets back a scatterplot for maternal age versus maternal weight gain for the state of North Dakota in 2020
+```{r}
+prams_nd2020 <- prams %>% 
+  filter(STATE == "ND") %>% 
+  filter(NEST_YR == "2020")
+
+
+ggplot(data = prams_nd2020, aes(x=MAT_AGE_PU, y=MOMLBS)) +
+  geom_point() 
+#this geom_point is what makes it a scatterplot, you can use geom_bar, geom_line, and others to change chart type
+```
+
+1.3.3.4 Now, let's try creating the same plot but adding titles and axes labels
+```{r}
+#it's the same ggplot function, but color changes the color of the points, 
+#alpha controls transparency
+#and labs gives labels 
+#finally we are adding a minimalist theme 
+ggplot(prams_nd2020, aes(x = MAT_AGE_PU, y = MOMLBS)) +
+  geom_point(color = "steelblue", alpha = 0.6) +
+  labs(
+    title = "Maternal Age vs. Maternal Weight Gain (North Dakota, 2020)",
+    x = "Maternal Age (years)",
+    y = "Maternal Weight Gain (lbs)"
+  ) +
+  theme_minimal()
+#notice how we build our base plot and then add layers
+```
+
+
+
+

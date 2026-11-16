@@ -1,0 +1,86 @@
+---
+title: 'TIDAL - TRAUMA INFORMED DATA SCIENCE FOR IPV PREVENTION'
+author: "ABEED SARKER; MODULE - 1.5.4"
+output:
+  pdf_document:
+    toc: no
+  html_document:
+    depth: 3
+    highlight: tango
+    theme: paper
+    toc: no
+---
+
+* First, let's load the libraries that we'll be using
+```{r message=FALSE, warning=TRUE}
+library(tm)
+library(wordcloud)
+library(dplyr)
+```
+
+* Next, we have to load the dataset. For now, we will use the train.csv file.
+```{r}
+full_dataset <- read.csv('train.csv')
+glimpse(full_dataset)
+```
+
+
+* Now let's load the texts only and put it in the VCorpus object provided by the tm package. 
+```{r}
+all_texts <-full_dataset$text
+all_texts_corpus <- VCorpus(VectorSource(all_texts))
+```
+
+* Now to preprocess the text. We will apply lowercasing, removing punctuation, removing stopwords, and stemming the words.
+```{r}
+stop_words = stopwords("english")
+extra_stopwords <- c("user","user_user","allcap","hashtag","number","domest","violenc","domest_violenc")
+stop_words <- unique(c(stop_words, extra_stopwords))
+
+all_texts_corpus <- tm_map(all_texts_corpus, content_transformer(tolower))
+
+all_texts_corpus <- tm_map(all_texts_corpus, removePunctuation)
+all_texts_corpus <- tm_map(all_texts_corpus, removeWords,stop_words)
+all_texts_corpus <- tm_map(all_texts_corpus, stemDocument)
+```
+
+* What does the corpus corpus look like now?
+
+```{r}
+all_texts_corpus[[6]]$content
+```
+
+
+* Now that we've loaded and preprocessed the texts, let's start vectorizing! But how do we generate vectors for n-grams? Let's first generate the n-grams by defining a function called NLP_tokenizer. Then we convert all the tweets into n-grams (1-3). If you study the code carefully, you'll see that for 2- and 3-grams, adjacent words are being concatenated using an *underscore* character.
+```{r}
+NLP_tokenizer <- function(x) {
+  unlist(lapply(ngrams(words(x), 1:2), paste, collapse = "_"), use.names = FALSE)
+}
+
+n_gram_corpus <- tm_map(all_texts_corpus,content_transformer(NLP_tokenizer))
+```
+
+* We can view the length of the corpus and the content to ensure that the n-grams were generated appropriately.
+```{r}
+length(n_gram_corpus)
+n_gram_corpus[[1]]$content
+```
+
+
+* Now that we have tokenized the texts and generated n-grams, we can start vectorizing. We are doing it step by step. First, we are generating a document-term matrix for the training set. Then we are removing sparse n-grams.
+```{r}
+training_dct_matrix <- DocumentTermMatrix(n_gram_corpus)
+training_dct_matrix_sparse <- removeSparseTerms(training_dct_matrix,0.995)
+training_dct_matrix
+training_dct_matrix_sparse
+```
+
+* After creating the document-term matrix, we can run specific functions provided by the tm package to obtain more insights. 
+```{r}
+findAssocs(training_dct_matrix_sparse,'domest_abus',0.1)
+findFreqTerms(training_dct_matrix_sparse,lowfreq = 200)
+
+wordcloud(n_gram_corpus, min.freq=10, max.words=200, scale=c(3,.1), random.order=FALSE, colors=brewer.pal(12, "Set3"))
+
+
+```

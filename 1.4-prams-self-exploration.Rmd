@@ -1,0 +1,242 @@
+---
+title: "PRAMS case study - Self Exploration"
+purpose: "For TIDAL training program Module 1.4.6, Machine learning implementation with R - a guided hands-on session"
+author: "Ran Xiao, Suhas Das"
+date: "2026-06"
+output: pdf_document
+---
+
+Setup chunk, lots of packages this time, so I'm breaking them up by concept
+
+```{r}
+pacman::p_load(
+  haven,
+  dplyr,
+  caret,
+  randomForest,
+  xgboost,
+  pROC,
+  ggplot2
+)
+
+```
+
+Section 1: Imputation. PRAMS has substantial missingness across demographic, behavioral, and psychosocial variables. Instead of removing records that have missing values for one or more variables, we instead use a method called imputation in order to keep the amount of rows the same. Imputation involves assigning data values to cells that are missing depending on a set of rules. The rules below go through many types of imputation.
+
+```{r}
+#load saved filtered data
+loaded_objects <- load("prams1to3_filteredvars.RData")
+data_imp <- get(loaded_objects[1])
+
+# Convert IPV to binary outcome
+data_imp$IPV_bin <- ifelse(data_imp$IPV == 2, 1, 0)
+
+# Drop IPV (categorical) and keep predictors
+predictors <- data_imp %>% select(-IPV, -IPV_bin)
+
+# 1. Median imputation for numeric predictors, this means we are inserting the median value of the records that are not missing into the missing records
+for (nm in names(predictors)) {
+  if (is.numeric(predictors[[nm]])) {
+    predictors[[nm]][is.na(predictors[[nm]])] <-
+      median(predictors[[nm]], na.rm = TRUE)
+  }
+}
+
+# 2. Mode imputation for categorical predictors. Just like median, this takes the most common value for the variable and assigns the missing cells that value
+mode_val <- function(v) names(sort(table(v), decreasing = TRUE))[1]
+
+for (nm in names(predictors)) {
+  if (!is.numeric(predictors[[nm]])) {
+    predictors[[nm]][is.na(predictors[[nm]])] <- mode_val(predictors[[nm]])
+  }
+}
+
+# 3. caret automated imputation. Just median imputation but using the package caret
+preproc <- caret::preProcess(predictors, method = "medianImpute")
+predictors_pp <- predict(preproc, predictors)
+
+# Final model matrix
+x <- model.matrix(~ ., data = predictors_pp)[, -1]
+y <- data_imp$IPV_bin
+```
+
+Section 2: Validation splits. In the PURPLE and 1.4.6 case study, we only split our data into training and testing. However, one more category we can split into is called validation. Validation data is used to help more complex models such as random forest decide hyperparameters such as number and size of trees (we will get into that below). Validation data is never used for training the actual model, though. Below is a 70/15/15 train/test/validation split
+
+```{r}
+set.seed(2026)
+
+# First split: train vs temp
+train_idx <- createDataPartition(y, p = 0.70, list = FALSE)
+x_train <- x[train_idx, ]
+y_train <- y[train_idx]
+
+x_temp  <- x[-train_idx, ]
+y_temp  <- y[-train_idx]
+
+# Second split: validation vs test (50/50 of remaining 30% to make 15% each)
+val_idx <- createDataPartition(y_temp, p = 0.50, list = FALSE)
+x_val <- x_temp[val_idx, ]
+y_val <- y_temp[val_idx]
+
+x_test <- x_temp[-val_idx, ]
+y_test <- y_temp[-val_idx]
+```
+
+Section 3: Cross validation. All this time, we've been evaluating models based on 1 train and 1 test split. Meaning we take the entire data, assign all of it to either train or test, and evaluate once. Something we can do to improve evluation is to add cross validation (cv) folds, where we subset the data into sections, split the sections up into train and test, then evaluate. The code below is how to build a model matrix with cv folds.
+
+```{r}
+ctrl <- trainControl(
+  method = "cv", #cv is cross validation 
+  number = 5, #this is how many subsets I am putting, in this case, 5
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final"
+)
+
+# Convert outcome to factor for caret package (later)
+y_train_factor <- factor(ifelse(y_train == 1, "Yes", "No"))
+```
+
+Section 4: Random Forest Model. This is a stronger ML model than regression. Think of a tree as a set of decisions that a model can take to arrive at a decision outcome. A random forest is a set of trees that examines relationships based on various conditions and models (i.e. linear vs. log, etc), then averaging them together to reduce variance. It's a very good model for nonlinear relationships.
+
+```{r}
+set.seed(2026)
+
+#splitting and training to build our trees
+rf_model <- train(
+  x = x_train,
+  y = y_train_factor,
+  method = "rf",
+  metric = "ROC",
+  trControl = ctrl,
+  tuneGrid = data.frame(mtry = c(3, 5, 7)),
+  ntree = 250                                 
+)
+
+rf_model
+
+# Predict on test set
+rf_prob <- predict(rf_model, newdata = x_test, type = "prob")[, "Yes"]
+
+#evaluating on the validation set 
+rf_val_prob <- predict(rf_model, newdata = x_val, type = "prob")[, "Yes"]
+rf_val_auc  <- pROC::auc(pROC::roc(y_val, rf_val_prob))
+rf_val_auc
+#AUC on validation set 0.8241
+
+# ROC for evaluation
+rf_roc <- pROC::roc(y_test, rf_prob)
+pROC::auc(rf_roc)
+#AUC of 0.7856
+
+# Plot to see the most important variables
+rf_imp <- varImp(rf_model)
+plot(rf_imp, top = 15)
+```
+
+4.2: Effect of changing hyperparameters on model performance: In this last random forest model, we set a hyperparameter (a condition that the AI model has to follow) to 250 trees. For random forest models, depending on the dataset and the parameters of it, there exists a "sweet spot" where there are just the right amount of trees for very good model performence without overfitting. Let's try reducing the amount of trees in the same random forest model and seeing how that will effect performance:
+
+```{r}
+set.seed(2026) #setting the same seed as the previous one to keep all things constant
+
+#Now 125 trees instead of 200
+rf_model2 <- train(
+  x = x_train,
+  y = y_train_factor,
+  method = "rf",
+  metric = "ROC",
+  trControl = ctrl,
+  tuneGrid = data.frame(mtry = c(3, 5, 7)),
+  ntree = 125                                 
+)
+
+rf_model2
+
+rf_prob2 <- predict(rf_model2, newdata = x_test, type = "prob")[, "Yes"]
+
+#evaluating on the validation set 
+rf_val_prob <- predict(rf_model2, newdata = x_val, type = "prob")[, "Yes"]
+rf_val_auc  <- pROC::auc(pROC::roc(y_val, rf_val_prob))
+rf_val_auc
+#Validation AUC of 0.822
+
+rf_roc2 <- pROC::roc(y_test, rf_prob2)
+pROC::auc(rf_roc2)
+#AUC is now 0.780, 0.056 less than if we had 250 trees
+
+rf_imp2 <- varImp(rf_model2)
+plot(rf_imp2, top = 15)
+```
+
+Section 5: Finally, XGBoost is a type of ML model called a gradient boosting algorithm (GBM) that builds trees sequentially, with each new tree correcting the errors of the previous ones, versus a random forest that makes it all at once. It is one of the strongest models for tabular data like prams and includes built‑in regularization, early stopping, and efficient handling of missing values. This section trains an XGBoost model using a validation set for early stopping and evaluates its predictive performance and feature importance.
+
+```{r}
+library(xgboost)
+
+# Prepare matrices
+dtrain <- xgb.DMatrix(data = x_train, label = y_train)
+dval   <- xgb.DMatrix(data = x_val,   label = y_val)
+dtest  <- xgb.DMatrix(data = x_test,  label = y_test)
+
+watchlist <- list(train = dtrain, eval = dval)
+
+set.seed(2026)
+
+xgb_model <- xgb.train(
+  data = dtrain,
+  watchlist = watchlist,
+  objective = "binary:logistic",
+  eval_metric = "auc",
+  nrounds = 500,
+  eta = 0.05,
+  max_depth = 4,
+  subsample = 0.8,
+  colsample_bytree = 0.8,
+  early_stopping_rounds = 20
+)
+
+# Predict on test set
+xgb_prob <- predict(xgb_model, dtest)
+
+# ROC for evaluation
+xgb_roc <- pROC::roc(y_test, xgb_prob)
+pROC::auc(xgb_roc)
+#AUC 0.785
+
+# Feature importance plot to determine important variables
+xgb_imp <- xgb.importance(model = xgb_model)
+xgb.plot.importance(xgb_imp, top_n = 15)
+
+```
+
+Section 5.2 class imbalanace tuning: Just like we tested the effect of the number of trees on model performance for the random forest model, now we will test another hyperparamter, class weight. Currently, the data subset we have is imbalanced, as we have a 1:3 ratio of yes IPV to no IPV. The xgboost model we made in the last section does not apply any weights to the class imbalance, so therefore every outcome gets treated equally and fitting is biased towards the majority class (no). But what if we treated IPV as a rare outcome and applied sample weights on it to have each "yes" response be weighted heavier compared to the no response? Let's see how balancing our classes effects model performance.
+
+```{r}
+set.seed(2026)
+
+xgb_weighted <- xgb.train(
+  data = dtrain,
+  watchlist = watchlist,
+  objective = "binary:logistic",
+  eval_metric = "auc",
+  nrounds = 500,
+  eta = 0.05,
+  max_depth = 4,
+  subsample = 0.8,
+  colsample_bytree = 0.8,
+  scale_pos_weight = 3,   #This line right here is what gives the minority class a "heavier" weight
+  early_stopping_rounds = 20
+)
+
+# Predict on test set
+xgb_prob_weighted <- predict(xgb_weighted, dtest)
+
+# ROC for evaluation
+xgb_roc_weighted <- pROC::roc(y_test, xgb_prob_weighted)
+pROC::auc(xgb_roc_weighted)
+#AUC: 0.7846, very small reduction in model performance
+
+# Feature importance
+xgb_imp_weighted <- xgb.importance(model = xgb_weighted)
+xgb.plot.importance(xgb_imp_weighted, top_n = 15)
+```
