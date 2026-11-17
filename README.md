@@ -42,7 +42,7 @@ These files support the parent module; their exact lesson assignment is not conf
 
 | Module | Topic | Delivery format | Code name |
 | --- | --- | --- | --- |
-| 1.3 | Additional PRAMS descriptive analysis and SAS import helper | Supporting material | [1.3-prams-descriptive-analysis.Rmd](1.3-prams-descriptive-analysis.Rmd)<br>[1.3-prams-sas-import.sas](1.3-prams-sas-import.sas) |
+| 1.3 | Additional PRAMS descriptive analysis and SAS import helper | Supporting material | [1.3-prams-descriptive-analysis.Rmd](1.3-prams-descriptive-analysis.Rmd)<br> |
 | 1.4 | Additional PRAMS machine learning case studies | On-campus intensive — related practice | [1.4-prams-case-study.Rmd](1.4-prams-case-study.Rmd)<br>[1.4-prams-self-exploration.Rmd](1.4-prams-self-exploration.Rmd) |
 
 ## Using the code
